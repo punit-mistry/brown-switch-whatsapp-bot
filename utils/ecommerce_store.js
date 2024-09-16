@@ -51,19 +51,19 @@ module.exports = class EcommerceStore {
     generateRandomGeoLocation() {
         let storeLocations = [
             {
-                latitude: 44.985613,
-                longitude: 20.1568773,
-                address: 'New Castle',
+                latitude: 28.679079,
+                longitude: 	77.069710,
+                address: 'Delhi,India ',
             },
             {
-                latitude: 36.929749,
-                longitude: 98.480195,
-                address: 'Glacier Hill',
+                latitude: 26.907524,
+                longitude: 75.739639,
+                address: 'Jaipur, India',
             },
             {
-                latitude: 28.91667,
-                longitude: 30.85,
-                address: 'Buena Vista',
+                latitude: 19.155001,
+                longitude: 72.849998,
+                address: 'Goregaon, Mumbai, Maharashtra, India',
             },
         ];
         return storeLocations[
