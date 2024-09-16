@@ -93,6 +93,20 @@ router.post('/meta_wa_callbackurl', async (req, res) => {
                         listOfButtons
                     );
                 }
+                if (incomingMessage.text.body == 10) {
+                    const selected_quantity = incomingMessage.text.body;
+                    const message = `You've selected a quantity of ${selected_quantity}.\n\nWhat do you want to do next?`;
+                    updatedCartQuantity(recipientPhone, selected_quantity);
+                    const listOfButtons = [
+                        { title: 'Checkout 🛍️', id: 'checkout' },
+                        { title: 'See more products', id: 'see_switches' },
+                    ];
+                    await sendTextMessageOptionsWithButtons(
+                        recipientPhone,
+                        message,
+                        listOfButtons
+                    );
+                }
             }
 
             if (typeOfMsg === 'radio_button_message') {
@@ -167,9 +181,6 @@ const generateSwitchText = ({ title, description, price }) => {
         `_Title_: *${title.trim()}*\n\n` +
         `_Description_: ${description.trim()}\n\n` +
         `_Price_: ₹${price}\n`
-        // `_Category_: ${category}\n` +
-        // `${rating?.count || 0} shoppers liked this product.\n` +
-        // `_Rated_: ${emojiRating(rating?.rate)}\n`
     );
 };
 
@@ -197,11 +208,6 @@ const handleSimpleButtonMessage = async (
 
     if (button_id === 'speak_to_human') {
         await sendHumanContactDetails(recipientPhone);
-    } else if (button_id === 'see_categories') {
-        await sendCategories(recipientPhone, message_id);
-    } else if (button_id.startsWith('category_')) {
-        const selectedCategory = button_id.split('category_')[1];
-        await sendCategoryProducts(selectedCategory, recipientPhone);
     } else if (button_id.startsWith('add_to_cart_')) {
         const product_id = button_id.split('add_to_cart_')[1];
         await addToCart({ recipientPhone, product_id });
@@ -210,6 +216,8 @@ const handleSimpleButtonMessage = async (
         await checkout(recipientPhone, recipientName, message_id);
     } else if (button_id === 'print_invoice') {
         await printInvoice(recipientPhone, recipientName);
+    } else if (button_id === 'set_quantity') {
+        await setQuantitUpdatedCart(recipientPhone, incomingMessage);
     }
 
     // switchs
@@ -288,102 +296,73 @@ const sendHumanContactDetails = async (recipientPhone) => {
     });
 };
 
-const sendCategories = async (recipientPhone, message_id) => {
-    const categories = await Store.getAllCategories();
-    const buttons = categories.data.slice(0, 3).map((category) => ({
-        title: category,
-        id: `category_${category}`,
-    }));
-
-    await Whatsapp.sendSimpleButtons({
-        message: `We have several categories.\nChoose one of them.`,
-        recipientPhone,
-        message_id,
-        listOfButtons: buttons,
-    });
-};
-
-const sendCategoryProducts = async (selectedCategory, recipientPhone) => {
-    const listOfProducts = await Store.getProductsInCategory(selectedCategory);
-    const rows = listOfProducts.data.slice(0, 10).map((product) => ({
-        id: `product_${product.id}`.substring(0, 256),
-        title: `${product.title.substring(0, 21)}...`,
-        description: `$${product.price}\n${product.description.substring(
-            0,
-            68
-        )}...`,
-    }));
-
-    const listOfSections = [
-        {
-            title: `🏆 Top 3: ${selectedCategory}`.substring(0, 24),
-            rows,
-        },
-    ];
-
-    await Whatsapp.sendRadioButtons({
-        recipientPhone,
-        headerText: `#BlackFriday Offers: ${selectedCategory}`,
-        bodyText: `Our Santa 🎅🏿 has lined up some great products for you based on your previous shopping history.\n\nPlease select one of the products below:`,
-        footerText: 'Powered by: BMI LLC',
-        listOfSections,
-    });
-};
-
 const addToCart = async ({ product_id, recipientPhone }) => {
     const product = await switchDetails.fetchSelectedSwitch(product_id);
+    product.quantity = 1;// Set default quantity to 1
     CustomerSession.get(recipientPhone).cart.push(product);
 };
 
 const listOfItemsInCart = (recipientPhone) => {
     const products = CustomerSession.get(recipientPhone).cart;
-    const total = products.reduce((acc, product) => acc + product.price, 0);
+    const total = products.reduce((acc, product) => acc + product.price * product.quantity, 0);
     const count = products.length;
     return { total, products, count };
+};
+const updatedCartQuantity = (recipientPhone, currentQuantity) => {
+    const products = CustomerSession.get(recipientPhone).cart;
+    products.forEach((product) => {
+        product.quantity = currentQuantity;
+    });
 };
 
 const updateCart = async (recipientPhone, message_id) => {
     const numberOfItemsInCart = listOfItemsInCart(recipientPhone).count;
-    
-    const message= `Your cart has been updated.\nNumber of items in cart: ${numberOfItemsInCart}.\n\nWhat do you want to do next?`;
-    const listOfButtons= [ 
-        { title: 'Checkout 🛍️', id: 'checkout' },
-        { title: 'See more products', id: 'see_switches' },
-    ]
+
+    const message = `Your cart has been updated.\nNumber of items in cart: ${numberOfItemsInCart}.\n\nWhat do you want to do next?`;
+    const listOfButtons = [
+        // { title: 'Checkout 🛍️', id: 'checkout' },
+        // { title: 'See more products', id: 'see_switches' },
+        { title: 'Set Quantity 🔢', id: 'set_quantity' },
+    ];
     await sendTextMessageOptionsWithButtons(
         recipientPhone,
         message,
         listOfButtons
     );
-  
+};
+const setQuantitUpdatedCart = async (recipientPhone, incomingMessage) => {
+    console.log('incomingMessage,', incomingMessage);
+    // const { message: { text: { body: quantity } } } = incomingMessage;
+    const message = ` please let me know how much you would like to order.`;
+    // const listOfButtons = [
+    //     { title: 'Checkout 🛍️', id: 'checkout' },
+    //     { title: 'See more products', id: 'see_switches' },
+    // ];
+    await sendTextMessageOptionsWithButtons(recipientPhone, message, []);
 };
 
 const checkout = async (recipientPhone, recipientName, message_id) => {
     const finalBill = listOfItemsInCart(recipientPhone);
     let invoiceText = `List of items in your cart:\n`;
-    
+
     finalBill.products.forEach((item, index) => {
-        invoiceText += `\n#${index + 1}: ${item.title} @ ₹${item.price}`;
+        invoiceText += `\n#${index + 1}: ${item.title} @ ₹${item.price} x ${item.quantity}`;
     });
-    
+
     // Calculate GST
     const gstPercentage = 0.18;
     const gstAmount = finalBill.total * gstPercentage;
     const totalWithGst = finalBill.total + gstAmount;
-    
-    // invoiceText += `\n\nSubtotal: ₹${finalBill.total.toFixed(2)}`;
-    // invoiceText += `\nGST (18%): ₹${gstAmount.toFixed(2)}`;
-    // invoiceText += `\nTotal: ₹${totalWithGst.toFixed(2)}`;
-    
+
     switchDetails.generatePDFInvoice({
         order_details: invoiceText,
         file_path: `./invoice_${recipientName}.pdf`,
         recipientName,
-        finalBill: {finalBill,gstAmount,totalWithGst}
+        finalBill: { finalBill, gstAmount, totalWithGst },
     });
-    
+
     await Whatsapp.sendText({ message: invoiceText, recipientPhone });
-    
+
     await Whatsapp.sendSimpleButtons({
         recipientPhone,
         message: `Thank you for shopping with us, ${recipientName}.\n\nYour order has been received & will be processed shortly.`,
@@ -393,7 +372,7 @@ const checkout = async (recipientPhone, recipientName, message_id) => {
             { title: 'Print my invoice', id: 'print_invoice' },
         ],
     });
-    
+
     clearCart(recipientPhone);
 };
 
@@ -406,22 +385,20 @@ const printInvoice = async (recipientPhone, recipientName) => {
 
     // const warehouse = Store.generateRandomGeoLocation();
 
-    const message= `Your order has been fulfilled. Come and pick it up, as you pay, here:`;
-    await sendTextMessageOptionsWithButtons(
-        recipientPhone,
-        message,[]);
-//     await Whatsapp.sendLocation({
-//         recipientPhone,
-//         latitude: warehouse.latitude,
-//         longitude: warehouse.longitude,
-//         address: warehouse.address,
-//         name: 'Punit Whatsapp bot Shop',
-//     });
+    const message = `Your order has been fulfilled. Come and pick it up, as you pay, here:`;
+    await sendTextMessageOptionsWithButtons(recipientPhone, message, []);
+    //     await Whatsapp.sendLocation({
+    //         recipientPhone,
+    //         latitude: warehouse.latitude,
+    //         longitude: warehouse.longitude,
+    //         address: warehouse.address,
+    //         name: 'Punit Whatsapp bot Shop',
+    //     });
 };
 
 const clearCart = (recipientPhone) => {
     CustomerSession.get(recipientPhone).cart = [];
-    storeMessageMain=[];
+    storeMessageMain = [];
 };
 
 module.exports = { router };
