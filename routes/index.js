@@ -1,16 +1,18 @@
 'use strict';
-const express = require('express');
 const fs = require('fs');
 const path = require('path');
-const router = express.Router();
-const EcommerceStore = require('./../utils/ecommerce_store.js');
-const {
-    sendTextMessageOptionsWithButtons,
-} = require('../common-handlers/commonHandlers');
-const Whatsapp = require('../common-handlers/whatsappClient');
+const express = require('express');
+const { stripePayment } = require('../utils/stripe');
 const switchDetails = require('../utils/switch_data');
+const Whatsapp = require('../common-handlers/whatsappClient');
+const {sendTextMessageOptionsWithButtons} = require('../common-handlers/commonHandlers');
+const {
+    processOrder,
+    cancelOrder,
+    sendConfirmationMessage,
+} = require('../utils/orderUtils');
 
-const Store = new EcommerceStore();
+const router = express.Router();
 const CustomerSession = new Map();
 const messagesFilePath = path.join(__dirname, 'messages.json');
 
@@ -42,6 +44,43 @@ const storeMessage = (message) => {
     //     );
     // });
 };
+// stripe payment
+router.post('/success', async (req, res) => {
+    const { sessionId, success } = req.body;
+
+    if (success) {
+        const { client_reference_id } = req.body.metadata;
+
+        // Find the customer based on the reference ID
+        const customer = CustomerSession.get(client_reference_id);
+
+        if (customer && customer.cart.length > 0) {
+            // Process the order
+            await processOrder(customer.cart, client_reference_id);
+
+            // Clear the cart
+            clearCart(client_reference_id);
+
+            // Send confirmation message
+            await sendConfirmationMessage(client_reference_id);
+
+            res.status(200).send('Payment successful');
+        } else {
+            res.status(400).send('Invalid customer reference');
+        }
+    } else {
+        res.status(400).send('Payment failed');
+    }
+});
+
+router.post('/cancel', async (req, res) => {
+    const { sessionId } = req.body;
+
+    // Cancel the order
+    await cancelOrder(sessionId);
+
+    res.status(200).send('Payment cancelled');
+});
 
 router.get('/meta_wa_callbackurl', (req, res) => {
     console.log('GET: Someone is pinging me!');
@@ -106,6 +145,9 @@ router.post('/meta_wa_callbackurl', async (req, res) => {
                         message,
                         listOfButtons
                     );
+                }
+                if (incomingMessage.text.body == 'stripe') {
+                    await printInvoice(recipientPhone, recipientName);
                 }
             }
 
@@ -218,8 +260,9 @@ const handleSimpleButtonMessage = async (
         await printInvoice(recipientPhone, recipientName);
     } else if (button_id === 'set_quantity') {
         await setQuantitUpdatedCart(recipientPhone, incomingMessage);
+    } else if (button_id === 'pay_with_stripe') {
+        await payWithStripe(recipientPhone, recipientName);
     }
-
     // switchs
     else if (button_id === 'see_switches') {
         await sendSwitches(recipientPhone, message_id);
@@ -298,13 +341,16 @@ const sendHumanContactDetails = async (recipientPhone) => {
 
 const addToCart = async ({ product_id, recipientPhone }) => {
     const product = await switchDetails.fetchSelectedSwitch(product_id);
-    product.quantity = 1;// Set default quantity to 1
+    product.quantity = 1; // Set default quantity to 1
     CustomerSession.get(recipientPhone).cart.push(product);
 };
 
 const listOfItemsInCart = (recipientPhone) => {
     const products = CustomerSession.get(recipientPhone).cart;
-    const total = products.reduce((acc, product) => acc + product.price * product.quantity, 0);
+    const total = products.reduce(
+        (acc, product) => acc + product.price * product.quantity,
+        0
+    );
     const count = products.length;
     return { total, products, count };
 };
@@ -346,7 +392,9 @@ const checkout = async (recipientPhone, recipientName, message_id) => {
     let invoiceText = `List of items in your cart:\n`;
 
     finalBill.products.forEach((item, index) => {
-        invoiceText += `\n#${index + 1}: ${item.title} @ ₹${item.price} x ${item.quantity}`;
+        invoiceText += `\n#${index + 1}: ${item.title} @ ₹${item.price} x ${
+            item.quantity
+        }`;
     });
 
     // Calculate GST
@@ -373,7 +421,7 @@ const checkout = async (recipientPhone, recipientName, message_id) => {
         ],
     });
 
-    clearCart(recipientPhone);
+    // clearCart(recipientPhone);
 };
 
 const printInvoice = async (recipientPhone, recipientName) => {
@@ -386,7 +434,9 @@ const printInvoice = async (recipientPhone, recipientName) => {
     // const warehouse = Store.generateRandomGeoLocation();
 
     const message = `Your order has been fulfilled. Come and pick it up, as you pay, here:`;
-    await sendTextMessageOptionsWithButtons(recipientPhone, message, []);
+    await sendTextMessageOptionsWithButtons(recipientPhone, message, [
+        { title: 'Pay with Stripe', id: 'pay_with_stripe' },
+    ]);
     //     await Whatsapp.sendLocation({
     //         recipientPhone,
     //         latitude: warehouse.latitude,
@@ -396,8 +446,40 @@ const printInvoice = async (recipientPhone, recipientName) => {
     //     });
 };
 
+const payWithStripe = async (recipientPhone, recipientName) => {
+    const finalBill = listOfItemsInCart(recipientPhone);
+    const amount = finalBill.total ; 
+    const currency = 'inr'; // Indian Rupees
+
+    try {
+        const stripeUrl = await stripePayment(amount, currency);
+        console.log('stripeUrl', stripeUrl);
+
+        const message = `Please pay ₹${finalBill.total.toFixed(
+            2
+        )} using Stripe:\n\n${stripeUrl}`;
+        await Whatsapp.sendText({ message, recipientPhone });
+        await Whatsapp.sendSimpleButtons({
+            recipientPhone,
+            message: `Your order total is ₹${finalBill.total.toFixed(
+                2
+            )}. Please complete payment.`,
+            listOfButtons: [
+                { title: 'Pay Now', id: 'pay_with_stripe' },
+                { title: 'Cancel', id: 'cancel_payment' },
+            ],
+        });
+    } catch (error) {
+        console.error('Error during Stripe payment:', error);
+        await Whatsapp.sendText({
+            message: 'An error occurred while processing your payment.',
+            recipientPhone,
+        });
+    }
+};
 const clearCart = (recipientPhone) => {
     CustomerSession.get(recipientPhone).cart = [];
+    CustomerSession.delete(recipientPhone);
     storeMessageMain = [];
 };
 
