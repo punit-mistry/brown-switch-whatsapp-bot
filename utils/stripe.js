@@ -17,6 +17,10 @@ exports.stripePayment = async (amount, currency) => {
       mode: 'payment',
       success_url: 'https://your-domain.com/success',
       cancel_url: 'https://your-domain.com/cancel',
+      billing_address_collection: 'required',
+      shipping_address_collection: {
+      allowed_countries: ['IN'], // Adjust this array based on the countries you want to allow
+      },
     });
 
     return session.url;
